@@ -287,10 +287,7 @@ class PVCNN2Base(nn.Module):
         assert emb.shape == torch.Size([timesteps.shape[0], self.embed_dim])
         return emb
 
-    def forward(self, inputs, t):
-        # inputs = (input shape, text embedding) tuple
-        inputs, txt_embeds = inputs # TODO: Rethink in terms of Dataset
-
+    def forward(self, inputs, txt_embeds, t):
         temb =  self.embedf(self.get_timestep_embedding(t, inputs.device))[:,:,None].expand(-1,-1,inputs.shape[-1])
         
         # Outputs of each condition_net_encoder block

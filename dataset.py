@@ -32,8 +32,6 @@ class ShapeNetText(Dataset):
         
         self.shape_dataset = shape_dataset
         self.clip_dataset = CLIPEmbeddingDataset(dataroot_clip, csv_file_clip, categories)
-
-        print(len(self.clip_dataset))
         
         self.shape_text_data = []
         for shape_sample in self.shape_dataset:
