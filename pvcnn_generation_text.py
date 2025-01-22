@@ -196,6 +196,7 @@ class ZeroConv(nn.Module):
 def freeze_module(model: nn.Module):
     for param in model.parameters():
         param.requires_grad = False
+    return model
 
 class PVCNN2Base(nn.Module):
 
@@ -212,7 +213,7 @@ class PVCNN2Base(nn.Module):
             use_att=use_att, dropout=dropout,
             width_multiplier=width_multiplier, voxel_resolution_multiplier=voxel_resolution_multiplier
         )
-        self.sa_layers = nn.ModuleList(sa_layers).requires_grad_(False)
+        self.sa_layers = nn.ModuleList(sa_layers)
 
         self.global_att = None if not use_att else Attention(channels_sa_features, 8, D=1)
 
@@ -271,6 +272,8 @@ class PVCNN2Base(nn.Module):
         # Positional Encoding
         freeze_module(self.embedf)
         
+        # Classifier
+        freeze_module(self.classifier)
         
     def get_timestep_embedding(self, timesteps, device):
         assert len(timesteps.shape) == 1  # and timesteps.dtype == tf.int32
@@ -299,7 +302,10 @@ class PVCNN2Base(nn.Module):
         # Broadcast add
         # Convert txt embed to input size (in_channels) and add to input
         # This will be fed into condition_net_encoder as per ControlNet
-        cond_features = self.condition_net_input(txt_embeds).unsqueeze(-1) + features.float()
+        # print('features', features.shape)
+        # print('txt_embeds', txt_embeds.shape)
+        # print('cond_input', self.condition_net_input(txt_embeds).shape)
+        cond_features = self.condition_net_input(txt_embeds).transpose(-2, -1) + features.float()
         cond_coords = coords.clone().detach().requires_grad_(True)
         cond_temb = temb.clone().detach().requires_grad_(True)
         
@@ -311,6 +317,7 @@ class PVCNN2Base(nn.Module):
                 features, coords, temb = sa_blocks ((features, coords, temb))
                 
                 # Forward the condition_net_encoder block
+                #print('cond_features', cond_features.shape)
                 cond_features, cond_coords, cond_temb = cond_blocks ((cond_features, cond_coords, cond_temb))
             else:
                 features, coords, temb = sa_blocks ((torch.cat([features,temb],dim=1), coords, temb))

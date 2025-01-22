@@ -12,7 +12,9 @@ from pvcnn_generation_text import PVCNN2Base
 import torch.distributed as dist
 from datasets.shapenet_data_pc import ShapeNet15kPointClouds
 from dataset import ShapeNetText
-
+import test_generation
+from copy import deepcopy
+from pvcnn_generation_text import freeze_module
 '''
 some utils
 '''
@@ -48,8 +50,8 @@ def norm(v, f):
     return v, f
 
 def getGradNorm(net):
-    pNorm = torch.sqrt(sum(torch.sum(p ** 2) for p in net.parameters()))
-    gradNorm = torch.sqrt(sum(torch.sum(p.grad ** 2) for p in net.parameters()))
+    pNorm = torch.sqrt(sum(torch.sum(p ** 2) for p in net.parameters() if p.requires_grad))
+    gradNorm = torch.sqrt(sum(torch.sum(p.grad ** 2) for p in net.parameters() if p.requires_grad))
     return pNorm, gradNorm
 
 
@@ -409,8 +411,8 @@ class Model(nn.Module):
     def prior_kl(self, x0):
         return self.diffusion._prior_bpd(x0)
 
-    def all_kl(self, x0, clip_denoised=True):
-        total_bpd_b, vals_bt, prior_bpd_b, mse_bt =  self.diffusion.calc_bpd_loop(self._denoise, x0, clip_denoised)
+    def all_kl(self, txt, x0, clip_denoised=True):
+        total_bpd_b, vals_bt, prior_bpd_b, mse_bt =  self.diffusion.calc_bpd_loop(txt, self._denoise, x0, clip_denoised)
 
         return {
             'total_bpd_b': total_bpd_b,
@@ -430,7 +432,7 @@ class Model(nn.Module):
         assert out.shape == torch.Size([B, D, N])
         return out
 
-    def get_loss_iter(self, data, noises=None):
+    def get_loss_iter(self, txt, data, noises=None):
         B, D, N = data.shape
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
@@ -438,20 +440,20 @@ class Model(nn.Module):
             noises[t!=0] = torch.randn((t!=0).sum(), *noises.shape[1:]).to(noises)
 
         losses = self.diffusion.p_losses(
-            denoise_fn=self._denoise, data_start=data, t=t, noise=noises)
+            txt, denoise_fn=self._denoise, data_start=data, t=t, noise=noises)
         assert losses.shape == t.shape == torch.Size([B])
         return losses
 
-    def gen_samples(self, shape, device, noise_fn=torch.randn,
+    def gen_samples(self, txt, shape, device, noise_fn=torch.randn,
                     clip_denoised=True,
                     keep_running=False):
-        return self.diffusion.p_sample_loop(self._denoise, shape=shape, device=device, noise_fn=noise_fn,
+        return self.diffusion.p_sample_loop(txt, self._denoise, shape=shape, device=device, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
                                             keep_running=keep_running)
 
-    def gen_sample_traj(self, shape, device, freq, noise_fn=torch.randn,
+    def gen_sample_traj(self,txt, shape, device, freq, noise_fn=torch.randn,
                     clip_denoised=True,keep_running=False):
-        return self.diffusion.p_sample_loop_trajectory(self._denoise, shape=shape, device=device, noise_fn=noise_fn, freq=freq,
+        return self.diffusion.p_sample_loop_trajectory(txt, self._denoise, shape=shape, device=device, noise_fn=noise_fn, freq=freq,
                                                        clip_denoised=clip_denoised,
                                                        keep_running=keep_running)
 
@@ -585,12 +587,6 @@ def train(gpu, opt, output_dir, noises_init):
         opt.diagIter = int(opt.diagIter / opt.ngpus_per_node)
         opt.vizIter = int(opt.vizIter / opt.ngpus_per_node)
 
-
-    ''' data '''
-    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
-    dataloader, _, train_sampler, _ = get_dataloader(opt, train_dataset, None)
-
-
     '''
     create networks
     '''
@@ -598,6 +594,40 @@ def train(gpu, opt, output_dir, noises_init):
     betas = get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
     model = Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
 
+    print('MODEL OLD', opt.model_old)
+    # Load previous weights
+    if opt.model_old:
+        ckpt_old = torch.load(opt.model_old)
+        model_old = test_generation.Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
+        
+        new_ckpt_old = {k.replace('module.', ''): v for k, v in ckpt_old['model_state'].items()}
+        
+        # def _transform_(m):
+        #     return nn.parallel.DistributedDataParallel(m)
+        
+        model_old = model_old.cuda()
+        #model.multi_gpu_wrapper(_transform_)
+        model_old.eval()
+        
+        model_old.load_state_dict(new_ckpt_old)
+        
+        model.model.fp_layers = freeze_module(deepcopy(model_old.model.fp_layers))
+        model.model.sa_layers = freeze_module(deepcopy(model_old.model.sa_layers))
+        model.model.embedf = freeze_module(deepcopy(model_old.model.embedf))
+        model.model.classifier = freeze_module(deepcopy(model_old.model.classifier))
+        
+        if model.model.global_att is not None:
+            model.model.global_att = freeze_module(deepcopy(model_old.model.global_att))
+
+
+    ''' data '''
+    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    dataloader, _, train_sampler, _ = get_dataloader(opt, train_dataset, None)
+
+
+    model.train()
+        
+        
     if opt.distribution_type == 'multi':  # Multiple processes, single GPU per process
         def _transform_(m):
             return nn.parallel.DistributedDataParallel(
@@ -640,7 +670,8 @@ def train(gpu, opt, output_dir, noises_init):
     def new_x_chain(x, num_chain):
         return torch.randn(num_chain, *x.shape[1:], device=x.device)
 
-
+    def new_prompt_chain(txt, num_chain):
+        return txt[0].unsqueeze(0).repeat(num_chain, 1, 1)
 
     for epoch in range(start_epoch, opt.niter):
 
@@ -650,7 +681,7 @@ def train(gpu, opt, output_dir, noises_init):
         lr_scheduler.step(epoch)
 
         for i, data in enumerate(dataloader):
-            print(data)
+            #print(data)
             x = data['train_points'].transpose(1,2) # < HERE
             
             txt = data['text_embedding']
@@ -670,8 +701,7 @@ def train(gpu, opt, output_dir, noises_init):
                 txt = txt.cuda()
                 noises_batch = noises_batch.cuda()
 
-            loss = model.get_loss_iter((x, txt), noises_batch).mean()
-
+            loss = model.get_loss_iter(txt, x, noises_batch).mean()
             optimizer.zero_grad()
             loss.backward()
             netpNorm, netgradNorm = getGradNorm(model)
@@ -696,7 +726,7 @@ def train(gpu, opt, output_dir, noises_init):
             logger.info('Diagnosis:')
 
             x_range = [x.min().item(), x.max().item()]
-            kl_stats = model.all_kl(x)
+            kl_stats = model.all_kl(txt, x)
             logger.info('      [{:>3d}/{:>3d}]    '
                          'x_range: [{:>10.4f}, {:>10.4f}],   '
                          'total_bpd_b: {:>10.4f},    '
@@ -718,8 +748,8 @@ def train(gpu, opt, output_dir, noises_init):
             model.eval()
             with torch.no_grad():
 
-                x_gen_eval = model.gen_samples(new_x_chain(x, 25).shape, x.device, clip_denoised=False)
-                x_gen_list = model.gen_sample_traj(new_x_chain(x, 1).shape, x.device, freq=40, clip_denoised=False)
+                x_gen_eval = model.gen_samples(new_prompt_chain(txt, 25), new_x_chain(x, 25).shape, x.device, clip_denoised=False)
+                x_gen_list = model.gen_sample_traj(new_prompt_chain(txt, 1), new_x_chain(x, 1).shape, x.device, freq=40, clip_denoised=False)
                 x_gen_all = torch.cat(x_gen_list, dim=0)
 
                 gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
@@ -759,7 +789,7 @@ def train(gpu, opt, output_dir, noises_init):
         if (epoch + 1) % opt.saveIter == 0:
 
             if should_diag:
-
+                logger.info('Saved')
 
                 save_dict = {
                     'epoch': epoch,
@@ -792,7 +822,7 @@ def main():
 
     ''' workaround '''
     train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
-    noises_init = torch.randn(len(train_dataset), opt.npoints, opt.nc)
+    noises_init = torch.randn(2 * len(train_dataset), opt.npoints, opt.nc)
 
     if opt.dist_url == "env://" and opt.world_size == -1:
         opt.world_size = int(os.environ["WORLD_SIZE"])
@@ -840,7 +870,8 @@ def parse_args():
 
     parser.add_argument('--model', default='', help="path to model (to continue training)")
 
-
+    parser.add_argument('--model_old', default='', help="path to old model to load existing modules")
+    
     '''distributed'''
     parser.add_argument('--world_size', default=1, type=int,
                         help='Number of distributed nodes.')
