@@ -1,35 +1,38 @@
-# Text-Driven 3D Shape Generation and Completion Using PVD
+# Shape Generation and Completion Through Point-Voxel Diffusion
+<p align="center">
+  <img src="assets/pvd_teaser.gif" width="80%"/>
+</p>
+
+[Project](https://alexzhou907.github.io/pvd) | [Paper](https://arxiv.org/abs/2104.03670) 
+
+Implementation of Shape Generation and Completion Through Point-Voxel Diffusion
+
+[Linqi Zhou](https://alexzhou907.github.io), [Yilun Du](https://yilundu.github.io/), [Jiajun Wu](https://jiajunwu.com/)
 
 ## Requirements:
 
-Please use a linux based system.
+Make sure the following environments are installed.
 
-### We assume these compilers are installed in your system:
-- g++ (check the version like: gcc --version) 
-- *Note: make sure the version is compatitible with the python version.*
-
-### Steps: 
-```python 
-conda create -n pvd python=3.6
+```
+python==3.6
+pytorch==1.4.0
+torchvision==0.5.0
+cudatoolkit==10.1
+matplotlib==2.2.5
+tqdm==4.32.1
+open3d==0.9.0
+trimesh=3.7.12
+scipy==1.5.1
 ```
 
-```python 
-conda activate pvd
+Install PyTorchEMD by
+```
+cd metrics/PyTorchEMD
+python setup.py install
+cp build/**/emd_cuda.cpython-36m-x86_64-linux-gnu.so .
 ```
 
-```python pip3 
-install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu111
-```
-
-```python 
-conda install -c conda-forge cudatoolkit-dev=11.1
-```
-
-```python 
-pip install kaolin==0.1.0 xmltodict==0.12.0 numba==0.51.2 pycuda==2019.1.2 matplotlib torch-scatter==2.0.4 torch-sparse==0.6.1 torch-cluster==1.5.4 torch-spline-conv==1.2.0 descartes==1.1.0 fire==0.3.1 jupyter==1.0.0 opencv_python==4.3.0.* Shapely==1.7.0 Pillow==6.2.1 torch_geometric==1.6.0 open3d trimesh ninja
-```
-
-- *If ```nvcc --version``` returns an incorrect version after installation, verify whether nvcc is installed within your Conda environment. The typical location is ```./miniconda3/envs/pvd/bin/nvcc```*
+The code was tested on Unbuntu with Titan RTX. 
 
 ## Data
 
@@ -46,12 +49,12 @@ $ python convert_cam_params.py --dataroot DATA_DIR --mitsuba_xml_root XML_DIR
 which will create `..._cam_params.npz` in each provided data folder for each view.
 
 ## Pretrained models
-
+Pretrained models can be downloaded [here](https://drive.google.com/drive/folders/1Q7aSaTr6lqmo8qx80nIm1j28mOHAHGiM?usp=sharing).
 
 ## Training:
 
 ```bash
-$ python train_generation_text.py --category car|chair|airplane
+$ python train_generation.py --category car|chair|airplane
 ```
 
 Please refer to the python file for optimal training parameters.
@@ -59,23 +62,46 @@ Please refer to the python file for optimal training parameters.
 ## Testing:
 
 ```bash
-$ python test_generation.py --category car|chair|airplane --model MODEL_PATH
+$ python train_generation.py --category car|chair|airplane --model MODEL_PATH
 ```
 
 ## Results
 
+Some generation and completion results are as follows.
+<p align="center">
+  <img src="assets/gen_comp.gif" width="60%"/>
+</p>
+
+Multimodal completion on a ShapeNet chair.
+<p align="center">
+  <img src="assets/mm_shapenet.gif" width="80%"/>
+</p>
+
+
+Multimodal completion on PartNet.
+<p align="center">
+  <img src="assets/mm_partnet.gif" width="80%"/>
+</p>
+
+
+Multimodal completion on two Redwood 3DScan chairs.
+<p align="center">
+  <img src="assets/mm_redwood.gif" width="80%"/>
+</p>
+
 ## Reference
-This repository contains the implementation of PVD and ControlNet:
 
-1. **Shape Generation and Completion Through Point-Voxel Diffusion**  
-- **Authors**: Zhou, Linqi and Du, Yilun and Wu, Jiajun 
-- **Published in**: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)
-- **Github**: [link](https://github.com/alexzhou907/PVD)
-- **Arxiv**: [link](https://arxiv.org/abs/2104.03670)
+```
+@inproceedings{Zhou_2021_ICCV,
+    author    = {Zhou, Linqi and Du, Yilun and Wu, Jiajun},
+    title     = {3D Shape Generation and Completion Through Point-Voxel Diffusion},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+    month     = {October},
+    year      = {2021},
+    pages     = {5826-5835}
+}
+```
 
+## Acknowledgement
 
-2. **Adding Conditional Control to Text-to-Image Diffusion Models**  
-- **Authors**: Lvmin Zhang and Anyi Rao and Maneesh Agrawala
-- **booktitle**: IEEE International Conference on Computer Vision (ICCV)
-- **Github**: [link](https://github.com/lllyasviel/ControlNet)
-- **Arxiv**: [link](https://arxiv.org/abs/2302.05543)
+For any questions related to codes and experiment setting, please contact [Linqi Zhou](linqizhou@stanford.edu) and [Yilun Du](yilundu@mit.edu). 
