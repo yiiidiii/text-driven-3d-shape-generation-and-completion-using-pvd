@@ -26,7 +26,7 @@ conda install -c conda-forge cudatoolkit-dev=11.1
 ```
 
 ```python 
-pip install kaolin==0.1.0 xmltodict==0.12.0 numba==0.51.2 pycuda==2019.1.2 matplotlib torch-scatter==2.0.4 torch-sparse==0.6.1 torch-cluster==1.5.4 torch-spline-conv==1.2.0 descartes==1.1.0 fire==0.3.1 jupyter==1.0.0 opencv_python==4.3.0.* Shapely==1.7.0 Pillow==6.2.1 torch_geometric==1.6.0 open3d trimesh ninja
+pip install kaolin==0.1.0 xmltodict==0.12.0 numba==0.51.2 pycuda==2019.1.2 matplotlib torch-scatter==2.0.4 torch-sparse==0.6.1 torch-cluster==1.5.4 torch-spline-conv==1.2.0 descartes==1.1.0 fire==0.3.1 jupyter==1.0.0 opencv_python==4.3.0.* Shapely==1.7.0 Pillow==6.2.1 torch_geometric==1.6.0 open3d trimesh ninja transformers
 ```
 
 - *If ```nvcc --version``` returns an incorrect version after installation, verify whether nvcc is installed within your Conda environment. The typical location is ```./miniconda3/envs/pvd/bin/nvcc```*
@@ -58,8 +58,14 @@ Please refer to the python file for optimal training parameters.
 
 ## Testing:
 
+- Test on validation set
 ```bash
-$ python test_generation.py --category car|chair|airplane --model MODEL_PATH
+$ python test_generation_text.py --category chair --model MODEL_PATH
+```
+
+- Test with user prompt
+```bash
+$ python test_generation_text.py --category chair --model MODEL_PATH --path_to_prompt_file PATH_TO_PROMPT_FILE
 ```
 
 ## Results

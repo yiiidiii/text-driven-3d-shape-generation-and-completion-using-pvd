@@ -11,3 +11,4 @@ __pycache__
 *.npz
 eval_model
 eval_data
+model_weights
