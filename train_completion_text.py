@@ -8,22 +8,23 @@ from torch.distributions import Normal
 
 from utils.file_utils import *
 from utils.visualize import *
-from pvcnn_generation_text import PVCNN2Base
+from pvcnn_completion_text import PVCNN2Base
 import torch.distributed as dist
 from datasets.shapenet_data_pc import ShapeNet15kPointClouds
-from dataset import ShapeNetText
-import train_generation
+from datasets.shapenet_data_sv import ShapeNet_Multiview_Points
+from dataset_completion import ShapeNetText
+import train_completion
 from copy import deepcopy
-from pvcnn_generation_text import freeze_module
+from pvcnn_completion_text import freeze_module
 
-# import sys
+import sys
 
-# # Open a file to write output
-# log_file = open("debug.log", "w")
+# Open a file to write output
+FILE = open("debug_completion", "w")
 
-# # Redirect stdout and stderr
-# sys.stdout = log_file
-# sys.stderr = log_file
+# Redirect stdout and stderr
+sys.stdout = FILE
+sys.stderr = FILE
 
 '''
 some utils
@@ -109,7 +110,7 @@ def discretized_gaussian_log_likelihood(x, *, means, log_scales):
     return log_probs
 
 class GaussianDiffusion:
-    def __init__(self,betas, loss_type, model_mean_type, model_var_type):
+    def __init__(self, betas, loss_type, model_mean_type, model_var_type, sv_points):
         self.loss_type = loss_type
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -118,7 +119,7 @@ class GaussianDiffusion:
         assert (betas > 0).all() and (betas <= 1).all()
         timesteps, = betas.shape
         self.num_timesteps = int(timesteps)
-
+        self.sv_points = sv_points
         # initialize twice the actual length so we can keep running for eval
         # betas = np.concatenate([betas, np.full_like(betas[:int(0.2*len(betas))], betas[-1])])
 
@@ -197,9 +198,9 @@ class GaussianDiffusion:
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
 
-    def p_mean_variance(self, txt_embeds, denoise_fn, data, t, clip_denoised: bool, return_pred_xstart: bool):
+    def p_mean_variance(self, txt, denoise_fn, data, t, clip_denoised: bool, return_pred_xstart: bool):
 
-        model_output = denoise_fn(data, txt_embeds, t)
+        model_output = denoise_fn(data, txt, t)[:,:,self.sv_points:]
 
 
         if self.model_var_type in ['fixedsmall', 'fixedlarge']:
@@ -210,24 +211,22 @@ class GaussianDiffusion:
                                torch.log(torch.cat([self.posterior_variance[1:2], self.betas[1:]])).to(data.device)),
                 'fixedsmall': (self.posterior_variance.to(data.device), self.posterior_log_variance_clipped.to(data.device)),
             }[self.model_var_type]
-            model_variance = self._extract(model_variance, t, data.shape) * torch.ones_like(data)
-            model_log_variance = self._extract(model_log_variance, t, data.shape) * torch.ones_like(data)
+            model_variance = self._extract(model_variance, t, data.shape) * torch.ones_like(model_output)
+            model_log_variance = self._extract(model_log_variance, t, data.shape) * torch.ones_like(model_output)
         else:
             raise NotImplementedError(self.model_var_type)
 
         if self.model_mean_type == 'eps':
-            x_recon = self._predict_xstart_from_eps(data, t=t, eps=model_output)
+            x_recon = self._predict_xstart_from_eps(data[:,:,self.sv_points:], t=t, eps=model_output)
 
-            if clip_denoised:
-                x_recon = torch.clamp(x_recon, -.5, .5)
 
-            model_mean, _, _ = self.q_posterior_mean_variance(x_start=x_recon, x_t=data, t=t)
+            model_mean, _, _ = self.q_posterior_mean_variance(x_start=x_recon, x_t=data[:,:,self.sv_points:], t=t)
         else:
             raise NotImplementedError(self.loss_type)
 
 
-        assert model_mean.shape == x_recon.shape == data.shape
-        assert model_variance.shape == model_log_variance.shape == data.shape
+        assert model_mean.shape == x_recon.shape
+        assert model_variance.shape == model_log_variance.shape
         if return_pred_xstart:
             return model_mean, model_variance, model_log_variance, x_recon
         else:
@@ -242,23 +241,23 @@ class GaussianDiffusion:
 
     ''' samples '''
 
-    def p_sample(self, txt_embeds, denoise_fn, data, t, noise_fn, clip_denoised=False, return_pred_xstart=False):
+    def p_sample(self, txt, denoise_fn, data, t, noise_fn, clip_denoised=False, return_pred_xstart=False):
         """
         Sample from the model
         """
-        model_mean, _, model_log_variance, pred_xstart = self.p_mean_variance(txt_embeds, denoise_fn, data=data, t=t, clip_denoised=clip_denoised,
+        model_mean, _, model_log_variance, pred_xstart = self.p_mean_variance(txt, denoise_fn, data=data, t=t, clip_denoised=clip_denoised,
                                                                  return_pred_xstart=True)
-        noise = noise_fn(size=data.shape, dtype=data.dtype, device=data.device)
-        assert noise.shape == data.shape
+        noise = noise_fn(size=model_mean.shape, dtype=model_mean.dtype, device=model_mean.device)
+
         # no noise when t == 0
-        nonzero_mask = torch.reshape(1 - (t == 0).float(), [data.shape[0]] + [1] * (len(data.shape) - 1))
+        nonzero_mask = torch.reshape(1 - (t == 0).float(), [data.shape[0]] + [1] * (len(model_mean.shape) - 1))
 
         sample = model_mean + nonzero_mask * torch.exp(0.5 * model_log_variance) * noise
-        assert sample.shape == pred_xstart.shape
+        sample = torch.cat([data[:, :, :self.sv_points], sample], dim=-1)
         return (sample, pred_xstart) if return_pred_xstart else sample
 
 
-    def p_sample_loop(self, txt_embeds, denoise_fn, shape, device,
+    def p_sample_loop(self, txt, partial_x, denoise_fn, shape, device,
                       noise_fn=torch.randn, clip_denoised=True, keep_running=False):
         """
         Generate samples
@@ -267,16 +266,16 @@ class GaussianDiffusion:
         """
 
         assert isinstance(shape, (tuple, list))
-        img_t = noise_fn(size=shape, dtype=torch.float, device=device)
+        img_t = torch.cat([partial_x, noise_fn(size=shape, dtype=torch.float, device=device)], dim=-1)
         for t in reversed(range(0, self.num_timesteps if not keep_running else len(self.betas))):
             t_ = torch.empty(shape[0], dtype=torch.int64, device=device).fill_(t)
-            img_t = self.p_sample(txt_embeds, denoise_fn=denoise_fn, data=img_t,t=t_, noise_fn=noise_fn,
+            img_t = self.p_sample(txt, denoise_fn=denoise_fn, data=img_t,t=t_, noise_fn=noise_fn,
                                   clip_denoised=clip_denoised, return_pred_xstart=False)
 
-        assert img_t.shape == shape
+        assert img_t[:,:,self.sv_points:].shape == shape
         return img_t
 
-    def p_sample_loop_trajectory(self, txt_embeds, denoise_fn, shape, device, freq,
+    def p_sample_loop_trajectory(self, txt, denoise_fn, shape, device, freq,
                                  noise_fn=torch.randn,clip_denoised=True, keep_running=False):
         """
         Generate samples, returning intermediate images
@@ -294,7 +293,7 @@ class GaussianDiffusion:
         for t in reversed(range(0,total_steps)):
 
             t_ = torch.empty(shape[0], dtype=torch.int64, device=device).fill_(t)
-            img_t = self.p_sample(txt_embeds, denoise_fn=denoise_fn, data=img_t, t=t_, noise_fn=noise_fn,
+            img_t = self.p_sample(txt, denoise_fn=denoise_fn, data=img_t, t=t_, noise_fn=noise_fn,
                                   clip_denoised=clip_denoised,
                                   return_pred_xstart=False)
             if t % freq == 0 or t == total_steps-1:
@@ -305,16 +304,17 @@ class GaussianDiffusion:
 
     '''losses'''
 
-    def _vb_terms_bpd(self, txt_embeds, denoise_fn, data_start, data_t, t, clip_denoised: bool, return_pred_xstart: bool):
-        true_mean, _, true_log_variance_clipped = self.q_posterior_mean_variance(x_start=data_start, x_t=data_t, t=t)
+    def _vb_terms_bpd(self, txt, denoise_fn, data_start, data_t, t, clip_denoised: bool, return_pred_xstart: bool):
+        true_mean, _, true_log_variance_clipped = self.q_posterior_mean_variance(x_start=data_start[:,:,self.sv_points:], x_t=data_t[:,:,self.sv_points:], t=t)
         model_mean, _, model_log_variance, pred_xstart = self.p_mean_variance(
-            txt_embeds, denoise_fn, data=data_t, t=t, clip_denoised=clip_denoised, return_pred_xstart=True)
+            txt, denoise_fn, data=data_t, t=t, clip_denoised=clip_denoised, return_pred_xstart=True)
+
         kl = normal_kl(true_mean, true_log_variance_clipped, model_mean, model_log_variance)
-        kl = kl.mean(dim=list(range(1, len(data_start.shape)))) / np.log(2.)
+        kl = kl.mean(dim=list(range(1, len(model_mean.shape)))) / np.log(2.)
 
         return (kl, pred_xstart) if return_pred_xstart else kl
 
-    def p_losses(self, txt_embeds, denoise_fn, data_start, t, noise=None):
+    def p_losses(self, txt, denoise_fn, data_start, t, noise=None):
         """
         Training loss calculation
         """
@@ -322,21 +322,18 @@ class GaussianDiffusion:
         assert t.shape == torch.Size([B])
 
         if noise is None:
-            noise = torch.randn(data_start.shape, dtype=data_start.dtype, device=data_start.device)
-        assert noise.shape == data_start.shape and noise.dtype == data_start.dtype
+            noise = torch.randn(data_start[:,:,self.sv_points:].shape, dtype=data_start.dtype, device=data_start.device)
 
-        data_t = self.q_sample(x_start=data_start, t=t, noise=noise)
+        data_t = self.q_sample(x_start=data_start[:,:,self.sv_points:], t=t, noise=noise)
 
         if self.loss_type == 'mse':
             # predict the noise instead of x_start. seems to be weighted naturally like SNR
-            eps_recon = denoise_fn(data_t, txt_embeds, t)
-            assert data_t.shape == data_start.shape
-            assert eps_recon.shape == torch.Size([B, D, N])
-            assert eps_recon.shape == data_start.shape
+            eps_recon = denoise_fn(torch.cat([data_start[:,:,:self.sv_points], data_t], dim=-1), txt, t)[:,:,self.sv_points:]
+
             losses = ((noise - eps_recon)**2).mean(dim=list(range(1, len(data_start.shape))))
         elif self.loss_type == 'kl':
             losses = self._vb_terms_bpd(
-                txt_embeds, denoise_fn=denoise_fn, data_start=data_start, data_t=data_t, t=t, clip_denoised=False,
+                txt, denoise_fn=denoise_fn, data_start=data_start, data_t=data_t, t=t, clip_denoised=False,
                 return_pred_xstart=False)
         else:
             raise NotImplementedError(self.loss_type)
@@ -357,7 +354,7 @@ class GaussianDiffusion:
             assert kl_prior.shape == x_start.shape
             return kl_prior.mean(dim=list(range(1, len(kl_prior.shape)))) / np.log(2.)
 
-    def calc_bpd_loop(self, txt_embeds, denoise_fn, x_start, clip_denoised=True):
+    def calc_bpd_loop(self, txt, denoise_fn, x_start, clip_denoised=True):
 
         with torch.no_grad():
             B, T = x_start.shape[0], self.num_timesteps
@@ -367,12 +364,13 @@ class GaussianDiffusion:
 
                 t_b = torch.empty(B, dtype=torch.int64, device=x_start.device).fill_(t)
                 # Calculate VLB term at the current timestep
+                data_t = torch.cat([x_start[:, :, :self.sv_points], self.q_sample(x_start=x_start[:, :, self.sv_points:], t=t_b)], dim=-1)
                 new_vals_b, pred_xstart = self._vb_terms_bpd(
-                    txt_embeds, denoise_fn, data_start=x_start, data_t=self.q_sample(x_start=x_start, t=t_b), t=t_b,
+                    txt, denoise_fn, data_start=x_start, data_t=data_t, t=t_b,
                     clip_denoised=clip_denoised, return_pred_xstart=True)
                 # MSE for progressive prediction loss
-                assert pred_xstart.shape == x_start.shape
-                new_mse_b = ((pred_xstart-x_start)**2).mean(dim=list(range(1, len(x_start.shape))))
+                assert pred_xstart.shape == x_start[:, :, self.sv_points:].shape
+                new_mse_b = ((pred_xstart - x_start[:, :, self.sv_points:]) ** 2).mean(dim=list(range(1, len(pred_xstart.shape))))
                 assert new_vals_b.shape == new_mse_b.shape ==  torch.Size([B])
                 # Insert the calculated term into the tensor of all terms
                 mask_bt = t_b[:, None]==torch.arange(T, device=t_b.device)[None, :].float()
@@ -380,7 +378,7 @@ class GaussianDiffusion:
                 mse_bt_ = mse_bt_ * (~mask_bt) + new_mse_b[:, None] * mask_bt
                 assert mask_bt.shape == vals_bt_.shape == vals_bt_.shape == torch.Size([B, T])
 
-            prior_bpd_b = self._prior_bpd(x_start)
+            prior_bpd_b = self._prior_bpd(x_start[:,:,self.sv_points:])
             total_bpd_b = vals_bt_.sum(dim=1) + prior_bpd_b
             assert vals_bt_.shape == mse_bt_.shape == torch.Size([B, T]) and \
                    total_bpd_b.shape == prior_bpd_b.shape ==  torch.Size([B])
@@ -401,10 +399,10 @@ class PVCNN2(PVCNN2Base):
         ((128, 128, 64), (64, 2, 32)),
     ]
 
-    def __init__(self, num_classes, embed_dim, use_att,dropout, extra_feature_channels=3, width_multiplier=1,
+    def __init__(self, num_classes, sv_points, embed_dim, use_att,dropout, extra_feature_channels=3, width_multiplier=1,
                  voxel_resolution_multiplier=1):
         super().__init__(
-            num_classes=num_classes, embed_dim=embed_dim, use_att=use_att,
+            num_classes=num_classes, sv_points=sv_points, embed_dim=embed_dim, use_att=use_att,
             dropout=dropout, extra_feature_channels=extra_feature_channels,
             width_multiplier=width_multiplier, voxel_resolution_multiplier=voxel_resolution_multiplier
         )
@@ -413,9 +411,9 @@ class PVCNN2(PVCNN2Base):
 class Model(nn.Module):
     def __init__(self, args, betas, loss_type: str, model_mean_type: str, model_var_type:str):
         super(Model, self).__init__()
-        self.diffusion = GaussianDiffusion(betas, loss_type, model_mean_type, model_var_type)
+        self.diffusion = GaussianDiffusion(betas, loss_type, model_mean_type, model_var_type, args.svpoints)
 
-        self.model = PVCNN2(num_classes=args.nc, embed_dim=args.embed_dim, use_att=args.attention,
+        self.model = PVCNN2(num_classes=args.nc, sv_points=args.svpoints, embed_dim=args.embed_dim, use_att=args.attention,
                             dropout=args.dropout, extra_feature_channels=0)
 
     def prior_kl(self, x0):
@@ -432,17 +430,16 @@ class Model(nn.Module):
         }
 
 
-    def _denoise(self, data, txt_embeds, t):
+    def _denoise(self, data, txt, t):
         B, D,N= data.shape
         assert data.dtype == torch.float
         assert t.shape == torch.Size([B]) and t.dtype == torch.int64
 
-        out = self.model(data, txt_embeds, t)
+        out = self.model(data, txt, t)
 
-        assert out.shape == torch.Size([B, D, N])
         return out
 
-    def get_loss_iter(self, txt, data, noises=None):
+    def get_loss_iter(self, data, txt, noises=None):
         B, D, N = data.shape
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
@@ -454,18 +451,13 @@ class Model(nn.Module):
         assert losses.shape == t.shape == torch.Size([B])
         return losses
 
-    def gen_samples(self, txt, shape, device, noise_fn=torch.randn,
+    def gen_samples(self, txt, partial_x, shape, device, noise_fn=torch.randn,
                     clip_denoised=True,
                     keep_running=False):
-        return self.diffusion.p_sample_loop(txt, self._denoise, shape=shape, device=device, noise_fn=noise_fn,
+        return self.diffusion.p_sample_loop(txt, partial_x, self._denoise, shape=shape, device=device, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
                                             keep_running=keep_running)
 
-    def gen_sample_traj(self,txt, shape, device, freq, noise_fn=torch.randn,
-                    clip_denoised=True,keep_running=False):
-        return self.diffusion.p_sample_loop_trajectory(txt, self._denoise, shape=shape, device=device, noise_fn=noise_fn, freq=freq,
-                                                       clip_denoised=clip_denoised,
-                                                       keep_running=keep_running)
 
     def train(self):
         self.model.train()
@@ -500,8 +492,8 @@ def get_betas(schedule_type, b_start, b_end, time_num):
     return betas
 
 
-def get_dataset(dataroot, npoints,category):
-    tr_dataset = ShapeNet15kPointClouds(root_dir=dataroot,
+def get_dataset(dataroot_pc, dataroot_sv, npoints, svpoints, category):
+    tr_dataset = ShapeNet15kPointClouds(root_dir=dataroot_pc,
         categories=[category], split='train',
         tr_sample_size=npoints,
         te_sample_size=npoints,
@@ -509,34 +501,24 @@ def get_dataset(dataroot, npoints,category):
         normalize_per_shape=False,
         normalize_std_per_axis=False,
         random_subsample=True)
-    print('SHAPE DATA')
-    te_dataset = ShapeNet15kPointClouds(root_dir=dataroot,
-        categories=[category], split='val',
-        tr_sample_size=npoints,
-        te_sample_size=npoints,
-        scale=1.,
-        normalize_per_shape=False,
-        normalize_std_per_axis=False,
+    print('SHAPE LOADED', file=FILE, flush=True)
+    ttr_dataset = ShapeNet_Multiview_Points(root_pc=dataroot_pc, root_views=dataroot_sv,
+                                            cache=os.path.join(dataroot_pc, '../cache'), split='train',
+        categories=[category],
+        npoints=npoints, sv_samples=svpoints,
         all_points_mean=tr_dataset.all_points_mean,
         all_points_std=tr_dataset.all_points_std,
     )
-    # print('SHAPE DATA')
-    ttr_dataset = ShapeNetText(
+    print('MULTIVIEW LOADED', file=FILE, flush=True)
+    tttr_dataset = ShapeNetText(
         dataroot_clip='./datasets/clip_embeddings/',
         csv_file_clip='./datasets/dataset/text2shape_c13.csv',
         categories=[category],
         synsnet_path_clip='./datasets/dataset/shapenet_synset_dict_v2.json',
-        shape_dataset=tr_dataset
+        shape_dataset=ttr_dataset
     )
-    tte_dataset = ShapeNetText(
-        dataroot_clip='./datasets/clip_embeddings/',
-        csv_file_clip='./datasets/dataset/text2shape_c13.csv',
-        categories=[category],
-        synsnet_path_clip='./datasets/dataset/shapenet_synset_dict_v2.json',
-        shape_dataset=te_dataset
-    )
-    
-    return ttr_dataset, tte_dataset
+    print('TEXT LOADED', file=FILE, flush=True)
+    return tttr_dataset
 
 
 def get_dataloader(opt, train_dataset, test_dataset=None):
@@ -572,7 +554,7 @@ def get_dataloader(opt, train_dataset, test_dataset=None):
 
 
 def train(gpu, opt, output_dir, noises_init):
-
+    print('TRAIN', file=FILE, flush=True)
     set_seed(opt)
     logger = setup_logging(output_dir)
     if opt.distribution_type == 'multi':
@@ -598,6 +580,12 @@ def train(gpu, opt, output_dir, noises_init):
         opt.diagIter = int(opt.diagIter / opt.ngpus_per_node)
         opt.vizIter = int(opt.vizIter / opt.ngpus_per_node)
 
+    print('DATA IN', file=FILE, flush=True)
+    ''' data '''
+    train_dataset = get_dataset(opt.dataroot_pc, opt.dataroot_sv, opt.npoints, opt.svpoints,opt.category)
+    dataloader, _, train_sampler, _ = get_dataloader(opt, train_dataset, None)
+    print('DATA OUT', file=FILE, flush=True)
+
     '''
     create networks
     '''
@@ -605,40 +593,6 @@ def train(gpu, opt, output_dir, noises_init):
     betas = get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
     model = Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
 
-    print('MODEL OLD', opt.model_old)
-    # Load previous weights
-    if opt.model_old:
-        ckpt_old = torch.load(opt.model_old)
-        model_old = train_generation.Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
-        
-        new_ckpt_old = {k.replace('module.', ''): v for k, v in ckpt_old['model_state'].items()}
-        
-        # def _transform_(m):
-        #     return nn.parallel.DistributedDataParallel(m)
-        
-        model_old = model_old.cuda()
-        #model.multi_gpu_wrapper(_transform_)
-        model_old.eval()
-        
-        model_old.load_state_dict(new_ckpt_old)
-        
-        model.model.fp_layers = freeze_module(deepcopy(model_old.model.fp_layers))
-        model.model.sa_layers = freeze_module(deepcopy(model_old.model.sa_layers))
-        model.model.embedf = freeze_module(deepcopy(model_old.model.embedf))
-        model.model.classifier = freeze_module(deepcopy(model_old.model.classifier))
-        
-        if model.model.global_att is not None:
-            model.model.global_att = freeze_module(deepcopy(model_old.model.global_att))
-
-
-    ''' data '''
-    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
-    dataloader, _, train_sampler, _ = get_dataloader(opt, train_dataset, None)
-
-
-    model.train()
-        
-        
     if opt.distribution_type == 'multi':  # Multiple processes, single GPU per process
         def _transform_(m):
             return nn.parallel.DistributedDataParallel(
@@ -653,7 +607,7 @@ def train(gpu, opt, output_dir, noises_init):
         def _transform_(m):
             return nn.parallel.DataParallel(m)
         model = model.cuda()
-        model.multi_gpu_wrapper(_transform_)
+        #model.multi_gpu_wrapper(_transform_)
 
     elif gpu is not None:
         torch.cuda.set_device(gpu)
@@ -677,12 +631,28 @@ def train(gpu, opt, output_dir, noises_init):
         start_epoch = torch.load(opt.model)['epoch'] + 1
     else:
         start_epoch = 0
+    
+    # Load previous weights
+    if opt.model_old:
+        ckpt_old = torch.load(opt.model_old)
+        model_old = train_completion.Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
+        
+        new_ckpt_old = {k.replace('module.', ''): v for k, v in ckpt_old['model_state'].items()}
+        
+        model_old = model_old.cuda()
+        model_old.eval()
+        
+        model_old.load_state_dict(new_ckpt_old)
+        
+        model.model.fp_layers = freeze_module(deepcopy(model_old.model.fp_layers))
+        model.model.sa_layers = freeze_module(deepcopy(model_old.model.sa_layers))
+        model.model.embedf = freeze_module(deepcopy(model_old.model.embedf))
+        model.model.classifier = freeze_module(deepcopy(model_old.model.classifier))
+        
+        if model.model.global_att is not None:
+            model.model.global_att = freeze_module(deepcopy(model_old.model.global_att))
 
-    def new_x_chain(x, num_chain):
-        return torch.randn(num_chain, *x.shape[1:], device=x.device)
-
-    def new_prompt_chain(txt, num_chain):
-        return txt[0].unsqueeze(0).repeat(num_chain, 1, 1)
+    model.train()
 
     for epoch in range(start_epoch, opt.niter):
 
@@ -692,27 +662,30 @@ def train(gpu, opt, output_dir, noises_init):
         lr_scheduler.step(epoch)
 
         for i, data in enumerate(dataloader):
-            #print(data)
-            x = data['train_points'].transpose(1,2) # < HERE
+            randind = np.random.choice(20) #20 views
+            x = data['train_points'].transpose(1,2)
+            sv_x = data['sv_points'][:,randind].transpose(1,2)
+
+            sv_x[:,:,opt.svpoints:] = x[:,:,opt.svpoints:]
+            noises_batch = noises_init[data['idx']].transpose(1,2)
             
             txt = data['text_embedding']
-            
-            noises_batch = noises_init[data['idx']].transpose(1,2)
 
             '''
             train diffusion
             '''
 
             if opt.distribution_type == 'multi' or (opt.distribution_type is None and gpu is not None):
-                x = x.cuda(gpu)
-                txt = txt.cuda(gpu)
+                sv_x = sv_x.cuda(gpu)
                 noises_batch = noises_batch.cuda(gpu)
+                txt = txt.cuda(gpu)
             elif opt.distribution_type == 'single':
-                x = x.cuda()
-                txt = txt.cuda()
+                sv_x = sv_x.cuda()
                 noises_batch = noises_batch.cuda()
+                txt = txt.cuda()
 
-            loss = model.get_loss_iter(txt, x, noises_batch).mean()
+            loss = model.get_loss_iter(sv_x, txt, noises_batch).mean()
+
             optimizer.zero_grad()
             loss.backward()
             netpNorm, netgradNorm = getGradNorm(model)
@@ -732,24 +705,24 @@ def train(gpu, opt, output_dir, noises_init):
                         ))
 
 
-        if (epoch + 1) % opt.diagIter == 0 and should_diag:
+        # if (epoch + 1) % opt.diagIter == 0 and should_diag:
 
-            logger.info('Diagnosis:')
+        #     logger.info('Diagnosis:')
 
-            x_range = [x.min().item(), x.max().item()]
-            kl_stats = model.all_kl(txt, x)
-            logger.info('      [{:>3d}/{:>3d}]    '
-                         'x_range: [{:>10.4f}, {:>10.4f}],   '
-                         'total_bpd_b: {:>10.4f},    '
-                         'terms_bpd: {:>10.4f},  '
-                         'prior_bpd_b: {:>10.4f}    '
-                         'mse_bt: {:>10.4f}  '
-                .format(
-                epoch, opt.niter,
-                *x_range,
-                kl_stats['total_bpd_b'].item(),
-                kl_stats['terms_bpd'].item(), kl_stats['prior_bpd_b'].item(), kl_stats['mse_bt'].item()
-            ))
+        #     x_range = [x.min().item(), x.max().item()]
+        #     kl_stats = model.all_kl(txt, sv_x)
+        #     logger.info('      [{:>3d}/{:>3d}]    '
+        #                  'x_range: [{:>10.4f}, {:>10.4f}],   '
+        #                  'total_bpd_b: {:>10.4f},    '
+        #                  'terms_bpd: {:>10.4f},  '
+        #                  'prior_bpd_b: {:>10.4f}    '
+        #                  'mse_bt: {:>10.4f}  '
+        #         .format(
+        #         epoch, opt.niter,
+        #         *x_range,
+        #         kl_stats['total_bpd_b'].item(),
+        #         kl_stats['terms_bpd'].item(), kl_stats['prior_bpd_b'].item(), kl_stats['mse_bt'].item()
+        #     ))
 
 
 
@@ -757,11 +730,12 @@ def train(gpu, opt, output_dir, noises_init):
             logger.info('Generation: eval')
 
             model.eval()
+            m, s = train_dataset.all_points_mean.reshape(1, -1), train_dataset.all_points_std.reshape(1, -1)
+
             with torch.no_grad():
 
-                x_gen_eval = model.gen_samples(new_prompt_chain(txt, 25), new_x_chain(x, 25).shape, x.device, clip_denoised=False)
-                x_gen_list = model.gen_sample_traj(new_prompt_chain(txt, 1), new_x_chain(x, 1).shape, x.device, freq=40, clip_denoised=False)
-                x_gen_all = torch.cat(x_gen_list, dim=0)
+                x_gen_eval = model.gen_samples(txt, sv_x[:,:,:opt.svpoints], sv_x[:,:,opt.svpoints:].shape, sv_x.device, clip_denoised=False).detach().cpu()
+
 
                 gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
                 gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
@@ -774,22 +748,17 @@ def train(gpu, opt, output_dir, noises_init):
                     *gen_eval_range, *gen_stats,
                 ))
 
-            visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
-                                       x_gen_eval.transpose(1, 2), None, None,
-                                       None)
+            export_to_pc_batch('%s/epoch_%03d_samples_eval' % (outf_syn, epoch),
+                                    (x_gen_eval.transpose(1, 2)*s+m).numpy()*3)
 
-            visualize_pointcloud_batch('%s/epoch_%03d_samples_eval_all.png' % (outf_syn, epoch),
-                                       x_gen_all.transpose(1, 2), None,
-                                       None,
-                                       None)
+            export_to_pc_batch('%s/epoch_%03d_ground_truth' % (outf_syn, epoch),
+                               (sv_x.transpose(1, 2).detach().cpu()*s+m).numpy()*3)
 
-            visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
-                                       None,
-                                       None)
+            export_to_pc_batch('%s/epoch_%03d_partial' % (outf_syn, epoch),
+                               (sv_x[:,:,:opt.svpoints].transpose(1, 2).detach().cpu()*s+m).numpy()*3)
 
-            logger.info('Generation: train')
+
             model.train()
-
 
 
 
@@ -800,7 +769,7 @@ def train(gpu, opt, output_dir, noises_init):
         if (epoch + 1) % opt.saveIter == 0:
 
             if should_diag:
-                logger.info('Saved')
+
 
                 save_dict = {
                     'epoch': epoch,
@@ -809,6 +778,7 @@ def train(gpu, opt, output_dir, noises_init):
                 }
 
                 torch.save(save_dict, '%s/epoch_%d.pth' % (output_dir, epoch))
+                logger.info('Saved')
 
 
             if opt.distribution_type == 'multi':
@@ -820,23 +790,20 @@ def train(gpu, opt, output_dir, noises_init):
     dist.destroy_process_group()
 
 def main():
+    print('MAIN', file=FILE, flush=True)
     opt = parse_args()
-    if opt.category == 'airplane':
-        opt.beta_start = 1e-5
-        opt.beta_end = 0.008
-        opt.schedule_type = 'warm0.1'
 
     exp_id = os.path.splitext(os.path.basename(__file__))[0]
     dir_id = os.path.dirname(__file__)
     output_dir = get_output_dir(dir_id, exp_id)
     copy_source(__file__, output_dir)
 
-    print('MAIN')
-    ''' workaround '''
-    print('GET DATASET')
-    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
-    noises_init = torch.randn(2 * len(train_dataset), opt.npoints, opt.nc)
-    print('GET DATASET DONE')
+    # ''' workaround '''
+    print('GET DATASET', file=FILE, flush=True)
+    #train_dataset = get_dataset(opt.dataroot_pc, opt.dataroot_sv, opt.npoints, opt.svpoints,opt.category)
+    print('GET DATASET DONE', file=FILE, flush=True)
+    noises_init = torch.randn(100000, opt.npoints-opt.svpoints, opt.nc)
+
     if opt.dist_url == "env://" and opt.world_size == -1:
         opt.world_size = int(os.environ["WORLD_SIZE"])
 
@@ -852,15 +819,17 @@ def main():
 def parse_args():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataroot', default='./datasets/shapenet/ShapeNetCore.v2.PC15k/')
+    parser.add_argument('--dataroot_pc', default='./datasets/shapenet/ShapeNetCore.v2.PC15k/')
+    parser.add_argument('--dataroot_sv', default='./datasets/genre/data/')
     parser.add_argument('--category', default='chair')
 
-    parser.add_argument('--bs', type=int, default=16, help='input batch size')
+    parser.add_argument('--bs', type=int, default=48, help='input batch size')
     parser.add_argument('--workers', type=int, default=16, help='workers')
     parser.add_argument('--niter', type=int, default=10000, help='number of epochs to train for')
 
     parser.add_argument('--nc', default=3)
     parser.add_argument('--npoints', default=2048)
+    parser.add_argument('--svpoints', default=200)
     '''model'''
     parser.add_argument('--beta_start', default=0.0001)
     parser.add_argument('--beta_end', default=0.02)
@@ -882,9 +851,11 @@ def parse_args():
     parser.add_argument('--lr_gamma', type=float, default=0.998, help='lr decay for EBM')
 
     parser.add_argument('--model', default='', help="path to model (to continue training)")
-
+    
     parser.add_argument('--model_old', default='', help="path to old model to load existing modules")
     
+
+
     '''distributed'''
     parser.add_argument('--world_size', default=1, type=int,
                         help='Number of distributed nodes.')
@@ -917,13 +888,3 @@ def parse_args():
 
 if __name__ == '__main__':
     main()
-    # opt = parse_args()
-    # train_dataset, test_dataset = get_dataset(opt.dataroot, opt.npoints, opt.category)
-    
-    # shape_text_dataset = ShapeNetText(
-    #     dataroot_clip='./datasets/clip_embeddings/',
-    #     csv_file_clip='./datasets/dataset/text2shape_c13.csv',
-    #     categories=[opt.category],
-    #     synsnet_path_clip='./datasets/dataset/shapenet_synset_dict_v2.json',
-    #     shape_dataset=test_dataset
-    # )
