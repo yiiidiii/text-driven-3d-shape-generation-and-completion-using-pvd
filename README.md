@@ -69,50 +69,20 @@ $ python test_generation_text.py --category OBJECT_CATEGORY --model MODEL_PATH -
 ## Results
 <div style="display: flex; flex-wrap: wrap; gap: 10px;">
   <div>
-    <img src="assets/table_3.png" alt="Generated Tables" width="200" height="400" />
-    <p style="text-align: center;">Generated Tables</p>
-  </div>
-  <div>
-    <img src="assets/sofa_3.png" alt="Generated Sofas" width="200" height="400" />
-    <p style="text-align: center;">Generated Sofas</p>
-  </div>
-  <div>
-    <img src="assets/completion_masked.jpeg" alt="Masked out chairs" width="200" height="400" />
-    <p style="text-align: center;">Masked out chairs</p>
-  </div>
-  <div>
-    <img src="assets/completion_generated.jpeg" alt="Completed chairs from mask" width="200" height="400" />
-    <p style="text-align: center;">Completed chairs from mask</p>
-  </div>
-  <div>
-    <img src="assets/completion_gt.jpeg" alt="Ground truth chairs" width="200" height="400" />
-    <p style="text-align: center;">Ground truth chairs</p>
+    <img src="assets/results_generation_completion.jpg" alt="generation_completion" width="1200" height="auto" />
   </div>
 </div>
 
 <div style="display: flex; flex-wrap: wrap; gap: 50px;">
   <div>
-    <img src="assets/rectangular_table.jpeg" alt="'Rectangular table'" width="200" height="auto" />
-    <p style="text-align: center;">"Rectangular table"</p>
-  </div>
-  <div>
-    <img src="assets/round_table.jpeg" alt="'Round table'" width="200" height="auto" />
-    <p style="text-align: center;">"Round table"</p>
-  </div>
-  <div>
-    <img src="assets/oval_table_3legs.jpeg" alt="'Oval table with three legs'" width="200" height="auto" />
-    <p style="text-align: center;">"Oval table with three legs"</p>
-  </div>
-  <div>
-    <img src="assets/oval_table_4legs.jpeg" alt="'Oval table with four legs'" width="200" height="auto" />
-    <p style="text-align: center;">"Oval table with four legs"</p>
+    <img src="assets/generation_with_prompts.jpg" alt="generation" width="1200" height="auto" />
   </div>
 </div>
 
 <div style="display: flex; flex-wrap: wrap; gap: 10px;">
   <div>
     <img src="assets/table_process.jpeg" alt="table_process" width="600" height="auto" />
-    <p style="text-align: center;">"Generation process of a table"</p>
+    <p style="text-align: center;">Generation process of a table</p>
   </div>
 </div>
 
