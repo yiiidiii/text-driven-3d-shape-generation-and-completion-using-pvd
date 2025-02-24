@@ -1,11 +1,11 @@
-# Text-Driven 3D Shape Generation and Completion Using PVD
+# ext Driven 3D Shape Generation and Completion Using Point-Voxel Diffusion
 
 ## Requirements:
 
 Please use a linux based system.
 
 ### We assume these compilers are installed in your system:
-- g++ (check the version like: gcc --version) 
+- g++ (check the version: gcc --version) 
 - *Note: make sure the version is compatitible with the python version.*
 
 ### Steps: 
@@ -36,7 +36,7 @@ pip install kaolin==0.1.0 xmltodict==0.12.0 numba==0.51.2 pycuda==2019.1.2 matpl
 For generation, we use ShapeNet point cloud, which can be downloaded [here](https://github.com/stevenygd/PointFlow).
 
 For completion, we use ShapeNet rendering provided by [GenRe](https://github.com/xiumingzhang/GenRe-ShapeHD).
-We provide script `convert_cam_params.py` to process the provided data.
+This script `convert_cam_params.py` process the provided data.
 
 For training the model on shape completion, we need camera parameters for each view
 which are not directly available. To obtain these, simply run 
@@ -45,13 +45,11 @@ $ python convert_cam_params.py --dataroot DATA_DIR --mitsuba_xml_root XML_DIR
 ```
 which will create `..._cam_params.npz` in each provided data folder for each view.
 
-## Pretrained models
-
 
 ## Training:
 
 ```bash
-$ python train_generation_text.py --category car|chair|airplane
+$ python train_generation_text.py --category OBJECT_CATEGORY
 ```
 
 Please refer to the python file for optimal training parameters.
@@ -60,15 +58,63 @@ Please refer to the python file for optimal training parameters.
 
 - Test on validation set
 ```bash
-$ python test_generation_text.py --category chair --model MODEL_PATH
+$ python test_generation_text.py --category OBJECT_CATEGORY --model MODEL_PATH
 ```
 
 - Test with user prompt
 ```bash
-$ python test_generation_text.py --category chair --model MODEL_PATH --path_to_prompt_file PATH_TO_PROMPT_FILE
+$ python test_generation_text.py --category OBJECT_CATEGORY --model MODEL_PATH --path_to_prompt_file PATH_TO_PROMPT_FILE
 ```
 
 ## Results
+<div style="display: flex; flex-wrap: wrap; gap: 10px;">
+  <div>
+    <img src="assets/table_3.png" alt="Generated Tables" width="200" height="400" />
+    <p style="text-align: center;">Generated Tables</p>
+  </div>
+  <div>
+    <img src="assets/sofa_3.png" alt="Generated Sofas" width="200" height="400" />
+    <p style="text-align: center;">Generated Sofas</p>
+  </div>
+  <div>
+    <img src="assets/completion_masked.jpeg" alt="Masked out chairs" width="200" height="400" />
+    <p style="text-align: center;">Masked out chairs</p>
+  </div>
+  <div>
+    <img src="assets/completion_generated.jpeg" alt="Completed chairs from mask" width="200" height="400" />
+    <p style="text-align: center;">Completed chairs from mask</p>
+  </div>
+  <div>
+    <img src="assets/completion_gt.jpeg" alt="Ground truth chairs" width="200" height="400" />
+    <p style="text-align: center;">Ground truth chairs</p>
+  </div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 50px;">
+  <div>
+    <img src="assets/rectangular_table.jpeg" alt="'Rectangular table'" width="200" height="auto" />
+    <p style="text-align: center;">"Rectangular table"</p>
+  </div>
+  <div>
+    <img src="assets/round_table.jpeg" alt="'Round table'" width="200" height="auto" />
+    <p style="text-align: center;">"Round table"</p>
+  </div>
+  <div>
+    <img src="assets/oval_table_3legs.jpeg" alt="'Oval table with three legs'" width="200" height="auto" />
+    <p style="text-align: center;">"Oval table with three legs"</p>
+  </div>
+  <div>
+    <img src="assets/oval_table_4legs.jpeg" alt="'Oval table with four legs'" width="200" height="auto" />
+    <p style="text-align: center;">"Oval table with four legs"</p>
+  </div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 10px;">
+  <div>
+    <img src="assets/table_process.jpeg" alt="table_process" width="600" height="auto" />
+    <p style="text-align: center;">"Generation process of a table"</p>
+  </div>
+</div>
 
 ## Reference
 This repository contains the implementation of PVD and ControlNet:

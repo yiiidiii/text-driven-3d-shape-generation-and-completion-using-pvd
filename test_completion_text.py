@@ -585,7 +585,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataroot_pc', default='./datasets/shapenet/ShapeNetCore.v2.PC15k/')
-    parser.add_argument('--dataroot_sv', default='./datasets/genre/data/')
+    parser.add_argument('--dataroot_sv', default='/cluster/51/bivekpanthi/completion_data/shapenet/')
     parser.add_argument('--category', default='chair')
 
     parser.add_argument('--batch_size', type=int, default=50, help='input batch size')
