@@ -81,8 +81,7 @@ $ python test_generation_text.py --category OBJECT_CATEGORY --model MODEL_PATH -
 
 <div style="display: flex; flex-wrap: wrap; gap: 10px;">
   <div>
-    <img src="assets/table_process.jpeg" alt="table_process" width="600" height="auto" />
-    <p style="text-align: center;">Generation process of a table</p>
+    <img src="assets/generation_process_of_table.jpg" alt="table_process" width="800" height="auto" />
   </div>
 </div>
 
