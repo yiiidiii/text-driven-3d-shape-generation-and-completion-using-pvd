@@ -1,4 +1,4 @@
-# ext Driven 3D Shape Generation and Completion Using Point-Voxel Diffusion
+# Text Driven 3D Shape Generation and Completion Using Point-Voxel Diffusion
 
 ## Requirements:
 
