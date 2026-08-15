@@ -1,5 +1,15 @@
 # Text Driven 3D Shape Generation and Completion Using Point-Voxel Diffusion
 
+
+This repository extends Point-Voxel Diffusion models for 3D shape generation and completion by introducing multi-modal conditioning via a ControlNet-style architecture. By leveraging joint representation learning, our framework enables flexible 3D shape manipulation guided by text descriptions and 2D images.
+
+## Key Contributions & Features
+- Expanded Category Evaluation: Trained and evaluated on standard ShapeNet benchmarks alongside at least two previously unexplored object categories to test cross-category generalization.
+- ControlNet-Style Multi-Modal Conditioning: Integrated a ControlNet-inspired conditioning pipeline to guide 3D diffusion generation using text features extracted from BERT vs. CLIP, providing a comparative analysis of their conditioning effectiveness.
+- Image-Guided Generation: Extended the unified ControlNet framework to image-conditioned 3D generation by tapping directly into CLIP’s shared text-image embedding space.
+- Text & Image-Guided Part Editing/Completion: An interactive workflow where users can generate an initial point cloud, mask out a specific 3D region, and provide updated text or image prompts to contextually complete or edit the missing region.
+
+
 ## Requirements:
 
 Please use a linux based system.
